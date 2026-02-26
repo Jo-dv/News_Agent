@@ -5,7 +5,7 @@
 ## ✨ 주요 기능 (Features)
 
 1. **지능형 웹 크롤링 & 데이터 정제**
-   - 매일경제 [금융정책 섹션](https://www.mk.co.kr/news/financial/financial-policy) 최신 기사 자동 수집 (BeautifulSoup)
+   - 매일경제 [금융정책 섹션](https://www.mk.co.kr/news/financial/financial-policy) 최신 기사 자동 수집
    - 스크롤/인터랙티브 특수 기사(`mvr-`, `interact` 등) 원천 차단
    - 300자 미만 깡통 기사 필터링 및 기자 이름 꼬리표 제거
    - 가독성 극대화를 위한 문단 정규화 및 중간제목(`midtitle`) 보호
