@@ -1,0 +1,25 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agent_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./models:/models  # 커스텀 모델 연결 통로
+    restart: unless-stopped
+
+  agent_app:
+    build: .
+    container_name: agent_app
+    volumes:
+      - ./app:/app
+    env_file:
+      - .env
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    command: tail -f /dev/null
+
+volumes:
+  ollama_data:
