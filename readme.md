@@ -1,4 +1,4 @@
-# 🚀 AI Financial News Agent (AI 금융 뉴스 자동화 에이전트)
+# 🚀 AI 금융 뉴스 자동화 에이전트
 
 매일 아침 '매일경제 금융정책' 뉴스를 자동으로 수집하고, AI가 핵심만 요약하여 노션(Notion)에 아카이빙한 뒤 이메일로 브리핑 리포트를 발송해 주는 자율형 데이터 파이프라인입니다.
 
@@ -25,7 +25,7 @@
 - **Libraries:** `requests`, `beautifulsoup4`, `scikit-learn`, `langchain-core`, `langchain_ollama`, `python-dotenv`
 - **External API:** Notion API, Google Gmail SMTP
 
-# 환경 변수
+## 💾 환경 변수
 [노션 DB 토큰 설정하기](https://www.notion.so/profile/integrations/internal)  
 [앱 비밀번호 설정하기](https://support.google.com/accounts/answer/185833?hl=ko)
 ```
@@ -39,7 +39,7 @@ SENDER_PASSWORD=구글앱비밀번호입력
 RECEIVER_EMAIL= # 필요시
 ```
 
-# ⚙️ 설치 및 세팅 방법 (Installation & Setup)
+## ⚙️ 설치 및 세팅 방법 (Installation & Setup)
 [도커 설치](https://www.docker.com/)
 ```bash
 git clone https://github.com/Jo-dv/News_Agent.git
@@ -51,13 +51,13 @@ docker exec -it agent_ollama ollama pull coolsoon/kanana-1.5-8b  # 모델 설치
 docker exec -it agent_app python main.py  # 에이전트 실행
 ```
 
-# 로컬 LLM
-## kanana-1.5-8b-instruct-2505 
+## 🤖 로컬 LLM
+### kanana-1.5-8b-instruct-2505 
 https://huggingface.co/kakaocorp/kanana-1.5-8b-instruct-2505  
 https://ollama.com/coolsoon/kanana-1.5-8b
 
 
-# 파일구조
+## 📁 파일구조
 ```
 .
 ├── app/
