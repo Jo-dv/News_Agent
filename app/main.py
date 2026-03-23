@@ -23,7 +23,7 @@ def run_agent():
     
     # 4. AI 리포트 작성
     start_time = time.time()
-    final_report = generate_daily_report(top_news[:1])
+    final_report = generate_daily_report(top_news[:3])
     end_time = time.time()
     total_time = end_time - start_time
     
