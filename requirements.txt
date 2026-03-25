@@ -4,3 +4,7 @@ scikit-learn==1.4.1.post1
 langchain-core>=0.2.0
 langchain-ollama>=0.1.0
 python-dotenv
+langgraph
+langchain-tavily-search
+chromadb
+discord.py
