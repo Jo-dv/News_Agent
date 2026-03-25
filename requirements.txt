@@ -1,8 +1,10 @@
-langchain-core>=0.2.0
+langchain-core>=0.3.0
 langchain-openai
-langchain-tavily-search
+langchain-community
+langchain-tavily  # 추가
 langgraph
 chromadb
 tiktoken
 discord.py
 python-dotenv
+requests
