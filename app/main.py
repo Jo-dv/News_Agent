@@ -1,9 +1,9 @@
-import os
-import asyncio
 import discord
+import asyncio
+import os
+from agent import financial_agent_app, config
+from email_sender import send_report_email # 이메일 발송 모듈
 from dotenv import load_dotenv
-from agent import financial_agent_app
-from email_sender import send_report_email 
 
 load_dotenv()
 
@@ -11,72 +11,55 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 동일한 thread_id를 사용해야 에이전트가 이전 대화와 리포트 문맥을 기억합니다.
-THREAD_ID = "discord_financial_session_1"
-config = {"configurable": {"thread_id": THREAD_ID}}
-
 @client.event
 async def on_ready():
-    print(f'디스코드 봇 연결 완료: {client.user}')
-    print("명령어 대기 중: !리포트생성, !종료")
+    print(f"✅ 디스코드 봇 연결 완료: {client.user}. '!리포트생성' 명령어를 대기합니다.")
 
 @client.event
 async def on_message(message):
     if message.author == client.user:
         return
 
-    # 1. 봇 및 컨테이너 종료 명령어
-    if message.content == "!종료":
-        await message.channel.send("🛑 컨테이너를 종료합니다.")
-        await client.close()
-        return
-
-    # 2. 리포트 생성 프로세스 트리거 (실시간 로그 출력 + 메일 전송만)
-    if message.content == "!리포트생성":
-        await message.channel.send("🚀 리포트 생성 프로세스를 시작합니다...")
+    # 1. 리포트 생성 (생성 후 종료하지 않고 대기)
+    if message.content.startswith("!리포트생성"):
+        await message.channel.send("🚀 **[Log]** 리포트 생성 프로세스를 시작합니다...")
         
         try:
-            state = {
-                "messages": [],
-                "is_initial_run": True, 
-                "user_query": ""
+            await message.channel.send("⏳ **[Log]** 검색 중...")
+            
+            initial_state = {
+                "is_initial_run": True,
+                "user_query": "국내 경제 및 은행 산업 일일 브리핑 작성"
             }
             
-            final_report = ""
-            
-            # astream()을 사용하여 각 노드의 작업이 끝날 때마다 로그를 출력합니다.
-            async for output in financial_agent_app.astream(state, config=config):
-                for node_name, node_state in output.items():
-                    if node_name == "macro_search":
-                        await message.channel.send("📊 [1/4] 거시 경제 동향 검색 및 분석 완료")
-                    elif node_name == "micro_search":
-                        await message.channel.send("🏦 [2/4] 4대 금융 산업 뉴스 검색 및 분석 완료")
-                    elif node_name == "merge_report":
-                        await message.channel.send("📝 [3/4] 전체 인사이트 리포트 취합 완료")
-                        # 병합 단계에서 생성된 리포트를 변수에 따로 저장합니다 (디스코드에는 출력하지 않음)
-                        final_report = node_state.get("final_report", "")
-                    elif node_name == "rag_store":
-                        await message.channel.send("💾 [4/4] 벡터 DB 데이터 적재 완료")
-            
-            if not final_report:
-                raise ValueError("리포트 텍스트가 비어 있습니다. 검색된 데이터가 없을 수 있습니다.")
-
-            # 리포트 디스코드 출력 과정 생략 -> 바로 이메일 발송
-            await message.channel.send("📧 결과 리포트를 이메일로 발송하는 중입니다...")
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, send_report_email, final_report)
+            result = await loop.run_in_executor(None, lambda: financial_agent_app.invoke(initial_state, config=config))
             
-            await message.channel.send("✅ 모든 작업이 완료되었습니다! 이메일 보관함을 확인해 주세요.\n(DB에 적재된 오늘자 리포트 내용에 대해 질문하시거나, 끝내려면 `!종료`를 입력하십시오.)")
-                
-        # 리포트 생성 중 에러 발생 시 로그를 남기고 컨테이너 강제 종료
+            final_report = result.get("final_report", "")
+            
+            await message.channel.send("💾 **[Log]** 검색 완료. 벡터 DB에 JSON 구조로 적재되었습니다.")
+            await message.channel.send("📧 **[Log]** 결과물을 이메일로 발송합니다...")
+            
+            send_report_email(report_content=final_report)
+            
+            # 여기서 종료하지 않고 챗봇 모드로 전환됨을 안내
+            await message.channel.send("✅ **[Log]** 발송 완료! 이제 리포트 내용에 대해 질문(RAG)하시거나, 끝내려면 `!종료`를 입력하세요.")
+            
         except Exception as e:
-            await message.channel.send(f"❌ [Error Log] 에러 발생: {str(e)}\n🛑 에러가 발생하여 컨테이너를 강제 종료합니다.")
-            print(f"에러 발생으로 인한 컨테이너 강제 종료: {e}")
-            await client.close()
-            
+            # 에러 발생 시 로그 출력 후 컨테이너 종료 로직 추가
+            await message.channel.send(f"❌ **[Error Log]** 에러 발생: {str(e)}")
+            await message.channel.send("🛑 **[Log]** 에러가 발생하여 봇 및 컨테이너를 종료합니다.")
+            await client.close() # 이 코드가 도커 컨테이너를 종료시킵니다.
         return
 
-    # 3. 일반 채팅 (RAG 질의응답 모드 트리거)
+    # 2. 특정 키워드로 컨테이너 수동 종료
+    if message.content.startswith("!종료"):
+        await message.channel.send("🛑 **[Log]** 시스템 종료 명령을 접수했습니다. 봇과 도커 컨테이너를 안전하게 종료합니다. 수고하셨습니다!")
+        print("사용자 요청(!종료)에 의해 컨테이너를 종료합니다.")
+        await client.close() # 디스코드 연결 종료 -> 파이썬 스크립트 종료 -> 도커 컨테이너 종료
+        return
+
+    # 3. 일반 채팅 (RAG 챗봇 기능 유지)
     if message.content:
         async with message.channel.typing():
             try:
@@ -88,20 +71,18 @@ async def on_message(message):
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, lambda: financial_agent_app.invoke(state, config=config))
                 
-                answer = result.get("chat_response", "응답을 생성하지 못했습니다.")
+                answer = result.get("chat_response")
                 
+                if not answer:
+                    await message.channel.send("⚠️ 에이전트가 답변을 생성하지 못했습니다.")
+                    return
+
                 for chunk in [answer[i:i+1900] for i in range(0, len(answer), 1900)]:
                     await message.channel.send(chunk)
                     
             except Exception as e:
-                await message.channel.send(f"❌ 질의응답 중 에러 발생: {str(e)}\n🛑 컨테이너를 강제 종료합니다.")
-                print(f"질의응답 중 에러: {e}")
-                await client.close()
+                await message.channel.send(f"❌ RAG 처리 중 에러가 발생했습니다: {str(e)}")
 
 if __name__ == "__main__":
-    token = os.environ.get("DISCORD_BOT_TOKEN")
-    
-    if not token:
-        print("❌ 에러: DISCORD_TOKEN을 찾을 수 없습니다. .env 파일을 확인하세요.")
-    else:
-        client.run(token)
+    DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+    client.run(DISCORD_TOKEN)
