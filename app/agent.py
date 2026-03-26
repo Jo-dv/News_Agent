@@ -13,6 +13,8 @@ from langgraph.checkpoint.memory import MemorySaver
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 
+from datetime import datetime, timedelta
+
 class AgentState(TypedDict):
     messages: Annotated[List[AnyMessage], operator.add]
     banking_data: str 
@@ -25,7 +27,13 @@ class AgentState(TypedDict):
 
 llm = ChatOpenAI(model="gpt-5.4-mini", temperature=0.2)
 embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-search_tool = TavilySearchResults(max_results=8, include_raw_content=True, topic="news")
+search_tool = TavilySearchResults(
+    max_results=7, 
+    search_depth="advanced",
+    include_raw_content=True,
+    topic="news",
+    days=7
+)
 memory = MemorySaver()
 
 # --- [3. DB 연결 (ChromaDB)] ---
@@ -42,22 +50,28 @@ collection = chroma_client.get_or_create_collection(
 
 # --- [4. 노드 함수 정의] ---
 def banking_search_node(state: AgentState):
-    """오늘 기준 은행 산업 단일 검색 노드"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """최근 1주일 기준 은행 산업 단일 검색 노드"""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
     
-    # 쿼리에 오늘 날짜를 강제하여 최신 기사만 검색 유도
-    query = f"date:{today} 대한민국 시중 은행 주요 뉴스"
+    # [수정 1]: 쿼리에서 날짜 텍스트를 빼고 자연어로 검색 (days=7 옵션이 범위를 강제함)
+    query = "대한민국 시중 은행 주요 뉴스"
     search_results = search_tool.invoke({"query": query})
     
-    urls = [res.get('url') for res in search_results if res.get('url')]
-    trimmed_results = [{"title": r.get('title'), "content": r.get('content', '')[:1000]} for r in search_results]
+    # (문자열 에러 방어 로직 복구)
+    if isinstance(search_results, str):
+        search_results = []
+        
+    urls = [res.get('url') for res in search_results if isinstance(res, dict) and res.get('url')]
+    trimmed_results = [{"title": r.get('title'), "content": r.get('content', '')[:1000]} for r in search_results if isinstance(r, dict)]
 
     safe_data_str = json.dumps(trimmed_results, ensure_ascii=False)
 
-    # 프롬프트: 오늘 발행된 팩트만 취합하도록 강제
-    prompt = f"""기준일: {today}
-    제공된 데이터는 오늘({today}) 검색된 대한민국 은행 산업 관련 문서들입니다.
-    반드시 오늘 날짜와 관련된 핵심 이슈 3가지만 분석하십시오. 과거 데이터는 무시하십시오.
+    # [수정 2]: 프롬프트에서 이슈 5가지로 추출량 증가 및 분석 기간 명시
+    prompt = f"""분석 기간: {last_week} ~ {today} (최근 1주일)
+    제공된 데이터는 위 기간 동안 검색된 대한민국 은행 산업 관련 문서들입니다.
+    반드시 해당 기간과 관련된 핵심 이슈 5가지만 분석하십시오. 과거 데이터는 무시하십시오.
     억지 칭찬이나 불필요한 미사여구는 배제하고, 객관적인 수치와 팩트 위주로 작성하십시오.
     
     데이터: {safe_data_str}
@@ -79,11 +93,15 @@ def banking_search_node(state: AgentState):
 
 def generate_report_node(state: AgentState):
     """검색된 은행 데이터를 바탕으로 리포트 생성"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    
     reasoning_logs = "\n".join([f"- {log}" for log in state.get("reasoning_log", []) if log])
     
+    # [수정 2]: 상세 리포트 템플릿의 항목을 5개로 확장
     prompt = f"""
-    아래 데이터를 바탕으로 {today} 기준 [국내 은행 산업 일일 리포트]를 작성하십시오.
+    아래 데이터를 바탕으로 {last_week} ~ {today} 기준 [국내 은행 산업 주간 리포트]를 작성하십시오.
     제공된 데이터 외의 외부 지식이나 과거 데이터는 섞지 마십시오. 감정적 표현 없이 건조하고 명확하게 작성하십시오.
 
     은행 산업 이슈: {state.get('banking_data', '')}
@@ -95,11 +113,13 @@ def generate_report_node(state: AgentState):
     {reasoning_logs}
 
     -----------------------------------------
-    ■ 2. 오늘의 핵심 요약
-    - (당일 은행 산업을 관통하는 가장 중요한 흐름 1~2줄 요약)
+    ■ 2. 주간 핵심 요약
+    - (최근 1주일 은행 산업을 관통하는 가장 중요한 흐름 1~2줄 요약)
 
     -----------------------------------------
     ■ 3. 주요 뉴스 상세 (팩트 위주)
+    - 
+    - 
     - 
     - 
     - 
@@ -148,8 +168,9 @@ def chat_and_rag_node(state: AgentState):
     """DB 기반 질의응답 노드"""
     query = state.get("user_query")
     
+    # DB에서 가장 유사한 문서 3개 검색
     results = collection.query(query_texts=[query], n_results=3)
-    
+
     context = ""
     if results and results.get('documents') and results['documents'][0]:
         context = "\n\n".join(results['documents'][0])
@@ -164,7 +185,7 @@ def chat_and_rag_node(state: AgentState):
     {query}
 
     [절대 규칙]
-    1. [참고 자료]에 사용자의 질문에 대한 직접적인 내용이 없다면, 반드시 "제공된 리포트 DB에 관련된 내용이 없습니다."라고만 출력하고 즉시 종료하십시오.
+    1. [참고 자료]에 사용자의 질문과 관련된 단어나 맥락이 조금이라도 포함되어 있다면, 그것을 바탕으로 최대한 답변을 구성하십시오. (관련 내용이 아예 단 하나도 없을 때만 "제공된 리포트 DB에 관련된 내용이 없습니다."라고 출력하십시오.)
     2. 사전 지식이나 일반 상식은 절대 사용하지 마십시오.
     3. 추임새나 친절한 설명은 빼고, 묻는 것에만 논리에 맞춰 현실적으로 대답하십시오.
     """
