@@ -1,42 +1,46 @@
 import os
 import operator
-import json
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Annotated, List, TypedDict
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.tools.tavily_search.tool import TavilySearchResults
-from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, AnyMessage
+from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_core.messages import HumanMessage, SystemMessage, AnyMessage
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import ToolNode
 
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 
-from datetime import datetime, timedelta
-
+# --- [1. 상태(State) 정의] ---
 class AgentState(TypedDict):
     messages: Annotated[List[AnyMessage], operator.add]
-    banking_data: str 
-    source_urls: Annotated[List[str], operator.add]
-    reasoning_log: Annotated[List[str], operator.add]
     final_report: str
     is_initial_run: bool
     user_query: str
     chat_response: str
 
-llm = ChatOpenAI(model="gpt-5.4-mini", temperature=0.2)
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+# --- [2. 도구 설정] ---
 search_tool = TavilySearchResults(
-    max_results=7, 
-    search_depth="advanced",
-    include_raw_content=True,
+    max_results=2, 
+    include_raw_content=False,
     topic="news",
     days=7
 )
-memory = MemorySaver()
+tools = [search_tool]
+tool_node = ToolNode(tools) # 도구 실행 노드
 
-# --- [3. DB 연결 (ChromaDB)] ---
+# --- [3. LLM 및 DB 설정] ---
+# 도구를 사용하는 에이전트용 LLM
+llm = ChatOpenAI(model="gpt-5.4-mini", temperature=0)
+llm_with_tools = llm.bind_tools(tools)
+
+# 문서 저장용 일반 LLM
+report_llm = ChatOpenAI(model="gpt-5.4-mini", temperature=0.2)
+
+embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
 openai_ef = embedding_functions.OpenAIEmbeddingFunction(
     api_key=os.environ.get("OPENAI_API_KEY"),
     model_name="text-embedding-3-small"
@@ -48,135 +52,112 @@ collection = chroma_client.get_or_create_collection(
     embedding_function=openai_ef
 )
 
+memory = MemorySaver()
+
 # --- [4. 노드 함수 정의] ---
-def banking_search_node(state: AgentState):
-    """최근 1주일 기준 은행 산업 단일 검색 노드"""
+
+def agent_node(state: AgentState):
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    system_prompt = f"""당신은 자율적으로 판단하는 금융 데이터 에이전트입니다.
+    분석 범위: {last_week} ~ {today}
     
-    # [수정 1]: 쿼리에서 날짜 텍스트를 빼고 자연어로 검색 (days=7 옵션이 범위를 강제함)
-    query = "대한민국 시중 은행 주요 뉴스"
-    search_results = search_tool.invoke({"query": query})
+    [미션] 
+    1. 거시 경제와 4대 금융 산업(은행, 카드, 보험, 증권)의 핵심 뉴스를 파악하십시오.
     
-    # (문자열 에러 방어 로직 복구)
-    if isinstance(search_results, str):
-        search_results = []
-        
-    urls = [res.get('url') for res in search_results if isinstance(res, dict) and res.get('url')]
-    trimmed_results = [{"title": r.get('title'), "content": r.get('content', '')[:1000]} for r in search_results if isinstance(r, dict)]
-
-    safe_data_str = json.dumps(trimmed_results, ensure_ascii=False)
-
-    # [수정 2]: 프롬프트에서 이슈 5가지로 추출량 증가 및 분석 기간 명시
-    prompt = f"""분석 기간: {last_week} ~ {today} (최근 1주일)
-    제공된 데이터는 위 기간 동안 검색된 대한민국 은행 산업 관련 문서들입니다.
-    반드시 해당 기간과 관련된 핵심 이슈 5가지만 분석하십시오. 과거 데이터는 무시하십시오.
-    억지 칭찬이나 불필요한 미사여구는 배제하고, 객관적인 수치와 팩트 위주로 작성하십시오.
-    
-    데이터: {safe_data_str}
-    
-    요약 전, 당신의 판단 논리를 '[추론: 은행 분석]' 이라는 텍스트로 시작하여 1줄로 명시하십시오."""
-    
-    response = llm.invoke([HumanMessage(content=prompt)])
-    content = response.content
-    
-    reasoning = ""
-    if "[추론: 은행 분석]" in content:
-        reasoning = content.split("\n")[0]
-
-    return {
-        "banking_data": content, 
-        "source_urls": urls,
-        "reasoning_log": [reasoning] if reasoning else []
-    }
-
-def generate_report_node(state: AgentState):
-    """검색된 은행 데이터를 바탕으로 리포트 생성"""
-    now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-    
-    reasoning_logs = "\n".join([f"- {log}" for log in state.get("reasoning_log", []) if log])
-    
-    # [수정 2]: 상세 리포트 템플릿의 항목을 5개로 확장
-    prompt = f"""
-    아래 데이터를 바탕으로 {last_week} ~ {today} 기준 [국내 은행 산업 주간 리포트]를 작성하십시오.
-    제공된 데이터 외의 외부 지식이나 과거 데이터는 섞지 마십시오. 감정적 표현 없이 건조하고 명확하게 작성하십시오.
-
-    은행 산업 이슈: {state.get('banking_data', '')}
-
-    ---
-    ### 템플릿 가이드 ###
-
-    ■ 1. 에이전트 추론 과정
-    {reasoning_logs}
-
-    -----------------------------------------
-    ■ 2. 주간 핵심 요약
-    - (최근 1주일 은행 산업을 관통하는 가장 중요한 흐름 1~2줄 요약)
-
-    -----------------------------------------
-    ■ 3. 주요 뉴스 상세 (팩트 위주)
-    - 
-    - 
-    - 
-    - 
-    - 
-
-    -----------------------------------------
-    ■ 4. 주요 출처
-    {state.get('source_urls', [])}
-    ---
+    [ReAct 탈출 및 사고 규칙 - 절대 준수]
+    1. 정보가 부족하면 검색 도구를 사용하십시오. (다중 검색 권장)
+    2. **도구를 호출하기 전에는 반드시 "어떤 데이터가 부족해서 무슨 키워드로 추가 검색을 하는지" 판단 이유를 텍스트로 먼저 명시하십시오. 이유 설명 없이 도구만 호출하는 것을 금지합니다.**
+    3. 충분한 정보가 모였다고 판단되면 즉시 도구 사용을 중단하십시오.
+    4. 도구 사용을 멈출 때는 "원하시면 다음 단계로..." 같은 불필요한 대화나 사용자에게 묻는 질문을 절대 하지 마십시오.
+    5. 분석이 끝나면 오직 "정보 수집 완료"라는 단 6글자만 출력하고 행동을 종료하십시오.
     """
     
-    response = llm.invoke([
-        SystemMessage(content="지시된 템플릿 형식에 맞춰 묻는 말에만 현실적이고 논리적으로 대답하십시오. 추임새는 철저히 배제하십시오."),
-        HumanMessage(content=prompt)
-    ])
+    messages = [SystemMessage(content=system_prompt)] + state["messages"]
+    response = llm_with_tools.invoke(messages)
     
-    return {"final_report": response.content, "messages": [AIMessage(content=response.content)]}
+    return {"messages": [response]}
+
+def generate_report_node(state: AgentState):
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+    
+    prompt = f"""
+    아래는 당신이 도구를 사용해 수집하고 분석한 전체 기록입니다.
+    이 기록들을 바탕으로 {last_week} ~ {today} 기준 [주간 금융 인사이트 리포트]를 작성하십시오.
+    
+    ---
+    ### 템플릿 가이드 ###
+    ■ 1. 에이전트 추론 요약
+    ■ 2. 주간 핵심 요약
+    ■ 3. 주요 뉴스 상세 (거시, 은행, 카드, 보험, 증권 팩트 위주)
+    ■ 4. 주요 출처 (참고한 URL들)
+    ---
+
+    [절대 규칙]
+    1. 지정된 1~4번 템플릿 항목 내용 외에는 단 한 글자도 출력하지 마십시오.
+    2. "원하시면 다음 단계로", "도움이 필요하시면" 등 사용자의 의향을 묻는 인사말이나 안내문구를 절대 추가하지 마십시오.
+    3. 4번 주요 출처 작성이 끝나면 문장을 닫고 즉시 텍스트 생성을 종료하십시오.
+    4. 제공된 검색 데이터 중에서 날짜가 {last_week} 이전인 과거 데이터(예: 1~2달 전 기사)는 무조건 폐기하십시오. 만약 특정 산업에 최신 데이터가 아예 없다면 억지로 과거 기사를 쓰지 말고 "이번 주 주요 이슈 없음"이라고만 기재하십시오.
+    """
+    
+    # 1. 기존 메시지 기록 가져오기
+    messages_to_pass = state["messages"]
+    
+    # 2. [에러 방지 핵심] 마지막 메시지가 도구 호출을 포함하고 있다면, 그 메시지는 버림
+    if hasattr(messages_to_pass[-1], 'tool_calls') and messages_to_pass[-1].tool_calls:
+        messages_to_pass = messages_to_pass[:-1]
+    
+    # 3. 정제된 메시지에 리포트 작성 프롬프트를 붙여서 실행
+    report_request = messages_to_pass + [HumanMessage(content=prompt)]
+    response = report_llm.invoke(report_request)
+    
+    return {"final_report": response.content}
 
 def rag_store_node(state: AgentState):
-    """생성된 데이터를 벡터 DB에 저장"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    """최종 리포트를 클리닝하여 벡터 DB에 저장"""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    final_report = state.get("final_report", "")
     
-    db_payload = {
-        "title": f"{today} 국내 은행 산업 동향",
-        "date": today,
-        "content": state.get('banking_data', ''),
-        "link": state.get("source_urls", [])
-    }
-    
-    json_document = json.dumps(db_payload, ensure_ascii=False)
+    # 앞서 논의한 노이즈(마크다운, 줄바꿈 등) 제거 로직 적용
+    def clean_text(text):
+        if not text: return ""
+        text = re.sub(r'[\*\#\-\[\]]', '', text)
+        text = text.replace('\\n', ' ').replace('\n', ' ').replace('\\', '')
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    cleaned_content = clean_text(final_report)
     
     meta_info = {
-        "title": f"{today}_banking_report",
-        "date": today,
-        "type": "daily_banking_report"
+        "title": f"{today_str}_react_report",
+        "date": today_str,
+        "type": "weekly_structured_report"
     }
     
+    # DB 적재 (os, chromadb, json 등이 여기서 활용됨)
     collection.upsert(
-        documents=[json_document],
+        documents=[cleaned_content],
         metadatas=[meta_info],
-        ids=[f"report_{today}"]
+        ids=[f"report_{today_str}"]
     )
     
     return state
 
 def chat_and_rag_node(state: AgentState):
-    """DB 기반 질의응답 노드"""
+    """사용자 질의응답 (엄격한 프롬프트 적용)"""
     query = state.get("user_query")
-    
-    # DB에서 가장 유사한 문서 3개 검색
     results = collection.query(query_texts=[query], n_results=3)
-
+    
     context = ""
     if results and results.get('documents') and results['documents'][0]:
         context = "\n\n".join(results['documents'][0])
         
     prompt = f"""
-    당신은 오직 제공된 [참고 자료]에 기반해서만 답변하는 엄격한 데이터 에이전트입니다.
+    당신은 제공된 [참고 자료]만 읽고 답변하는 엄격한 금융 데이터 분석가입니다.
 
     [참고 자료]
     {context}
@@ -184,38 +165,76 @@ def chat_and_rag_node(state: AgentState):
     [사용자 질문]
     {query}
 
-    [절대 규칙]
-    1. [참고 자료]에 사용자의 질문과 관련된 단어나 맥락이 조금이라도 포함되어 있다면, 그것을 바탕으로 최대한 답변을 구성하십시오. (관련 내용이 아예 단 하나도 없을 때만 "제공된 리포트 DB에 관련된 내용이 없습니다."라고 출력하십시오.)
-    2. 사전 지식이나 일반 상식은 절대 사용하지 마십시오.
-    3. 추임새나 친절한 설명은 빼고, 묻는 것에만 논리에 맞춰 현실적으로 대답하십시오.
+    [응답 지침 - 최우선 순위]
+    1. [참고 자료]에 사용자의 질문과 관련된 단어나 맥락이 조금이라도 포함되어 있다면, 그것을 바탕으로 최대한 답변을 구성하십시오.(관련 내용이 아예 단 하나도 없을 때만 "제공된 리포트 DB에 관련된 내용이 없습니다."라고 출력하십시오.)
+    2. 자료에 내용이 있다면, 질문에 대해서만 논리적이고 건조하게 답변하십시오.
+    3. 당신의 개인적인 상식이나 추임새는 철저히 배제하십시오.
     """
     
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = report_llm.invoke([HumanMessage(content=prompt)])
+    
+    # 혹시라도 LLM이 말을 안 들을 때를 대비한 강제 차단 방어벽
+    if "내용이 없습니다" in response.content or "없습니다" in response.content:
+        return {"chat_response": "제공된 리포트 DB에 관련된 내용이 없습니다."}
+        
     return {"chat_response": response.content}
 
-# --- [5. 워크플로우 그래프 빌드] ---
+# --- [5. 워크플로우 그래프 및 라우팅] ---
+
+def should_continue(state: AgentState):
+    """에이전트의 마지막 메시지와 전체 루프 길이를 확인하여 라우팅 결정"""
+    messages = state.get("messages", [])
+    last_message = messages[-1]
+    
+    # [Fallback 로직] 메시지가 8개 이상 쌓였다면 (약 3~4회 루프 반복)
+    # 에이전트가 헤매고 있다고 판단하고 억지로 리포트 작성으로 넘김
+    if len(messages) >= 8:
+        print("\n[Fallback 발동] 에이전트 검색 루프 한계 도달. 지금까지 수집한 데이터로 리포트를 강제 작성합니다.")
+        return "generate_report"
+        
+    # 정상 로직: 도구 호출이 있으면 action 노드로, 없으면 리포트 작성으로
+    if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+        return "action"
+        
+    return "generate_report"
+
 def route_request(state: AgentState):
     if state.get("is_initial_run", False):
-        return "banking_search" # 수정됨
+        return "agent" # ReAct 루프 시작
     return "chat_and_rag"
 
 workflow = StateGraph(AgentState)
-workflow.add_node("banking_search", banking_search_node)
+
+# 노드 등록
+workflow.add_node("agent", agent_node)
+workflow.add_node("action", tool_node)
 workflow.add_node("generate_report", generate_report_node)
 workflow.add_node("rag_store", rag_store_node)
 workflow.add_node("chat_and_rag", chat_and_rag_node)
 
+# 진입점 설정
 workflow.set_conditional_entry_point(
     route_request,
-    {"banking_search": "banking_search", "chat_and_rag": "chat_and_rag"}
+    {"agent": "agent", "chat_and_rag": "chat_and_rag"}
 )
 
-workflow.add_edge("banking_search", "generate_report")
+# ReAct 루프 엣지 설정
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+    {
+        "action": "action",
+        "generate_report": "generate_report"
+    }
+)
+
+# action 노드가 끝나면 다시 agent 노드로 돌아가서 결과를 확인하도록 강제
+workflow.add_edge("action", "agent")
+
+# 리포트 작성 -> DB 적재 -> 종료
 workflow.add_edge("generate_report", "rag_store")
 workflow.add_edge("rag_store", END)
 workflow.add_edge("chat_and_rag", END)
 
 financial_agent_app = workflow.compile(checkpointer=memory)
-
-# --- [6. 설정] ---
-config = {"configurable": {"thread_id": "daily_report_thread"}}
+config = {"configurable": {"thread_id": "react_financial_thread"}}

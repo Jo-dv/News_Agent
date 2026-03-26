@@ -1,3 +1,4 @@
+import uuid
 import discord
 import asyncio
 import os
@@ -29,27 +30,57 @@ async def on_message(message):
             
             initial_state = {
                 "is_initial_run": True,
-                "user_query": "국내 경제 및 은행 산업 일일 브리핑 작성"
+                "user_query": "국내 경제 및 금융 산업 일일 브리핑 작성"
+            }
+
+            current_config = {
+                "configurable": {"thread_id": f"report_thread_{uuid.uuid4().hex[:8]}"},
+                "recursion_limit": 15
             }
             
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: financial_agent_app.invoke(initial_state, config=config))
-            
-            final_report = result.get("final_report", "")
-            
-            await message.channel.send("💾 **[Log]** 검색 완료. 벡터 DB에 JSON 구조로 적재되었습니다.")
+            final_report = ""
+
+            async for output in financial_agent_app.astream(initial_state, config=current_config):
+                for node_name, node_state in output.items():
+                    
+                    if node_name == "agent":
+                        latest_message = node_state.get("messages", [])[-1]
+                        thought = latest_message.content
+                        tool_calls = latest_message.tool_calls
+                        
+                        if thought:
+                            thought_msg = f"🧠 **[에이전트 사고]**\n{thought}"
+                            # 1900자씩 잘라서 순차적으로 전송
+                            for chunk in [thought_msg[i:i+1900] for i in range(0, len(thought_msg), 1900)]:
+                                await message.channel.send(chunk)
+                                                
+                        if tool_calls:
+                            tool_names = [tc['name'] for tc in tool_calls]
+                            await message.channel.send(f"🔍 **[도구 호출]** 검색 시작: {', '.join(tool_names)}")
+
+                    elif node_name == "action":
+                        await message.channel.send("📥 **[데이터 수집]** 검색 결과를 확보했습니다. 재분석합니다...")
+                        
+                    elif node_name == "generate_report":
+                        await message.channel.send("📝 **[리포트 작성]** 정보 수집이 완료되어 리포트를 작성 중입니다...")
+                        final_report = node_state.get("final_report", "")
+                        
+                    elif node_name == "rag_store":
+                        await message.channel.send("💾 **[DB 적재]** 최종 리포트의 노이즈를 제거하고 벡터 DB에 저장했습니다.")
+                        
             await message.channel.send("📧 **[Log]** 결과물을 이메일로 발송합니다...")
             
-            send_report_email(report_content=final_report)
+            # [수정 3] 이메일 발송이 디스코드 봇을 멈추게 하지 않도록 비동기 처리
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: send_report_email(report_content=final_report))
             
-            # 여기서 종료하지 않고 챗봇 모드로 전환됨을 안내
             await message.channel.send("✅ **[Log]** 발송 완료! 이제 리포트 내용에 대해 질문(RAG)하시거나, 끝내려면 `!종료`를 입력하세요.")
             
         except Exception as e:
-            # 에러 발생 시 로그 출력 후 컨테이너 종료 로직 추가
             await message.channel.send(f"❌ **[Error Log]** 에러 발생: {str(e)}")
             await message.channel.send("🛑 **[Log]** 에러가 발생하여 봇 및 컨테이너를 종료합니다.")
-            await client.close() # 이 코드가 도커 컨테이너를 종료시킵니다.
+            await client.close() 
+            
         return
 
     # 2. 특정 키워드로 컨테이너 수동 종료
