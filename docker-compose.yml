@@ -1,25 +1,21 @@
-services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: agent_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-      - ./models:/models  # 커스텀 모델 연결 통로
-    restart: unless-stopped
+name: news_agent_v2
 
-  agent_app:
+services:
+  agent_app_v2:
     build: .
-    container_name: agent_app
+    image: news_agent_v2_image
+    container_name: agent_app_v2
+    networks:
+      - v2_network
     volumes:
       - ./app:/app
+      - ./chroma_data_v2:/app/chroma_data
+      - ./logs:/app/logs
     env_file:
       - .env
-    depends_on:
-      - ollama
     restart: unless-stopped
     command: tail -f /dev/null
 
-volumes:
-  ollama_data:
+networks:
+  v2_network:
+    driver: bridge
