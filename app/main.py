@@ -5,6 +5,8 @@ import os
 from agent import financial_agent_app, config
 from email_sender import send_report_email # 이메일 발송 모듈
 from dotenv import load_dotenv
+import traceback
+import datetime
 
 load_dotenv()
 
@@ -77,11 +79,23 @@ async def on_message(message):
             await message.channel.send("✅ **[Log]** 발송 완료! 이제 리포트 내용에 대해 질문(RAG)하시거나, 끝내려면 `!종료`를 입력하세요.")
             
         except Exception as e:
-            await message.channel.send(f"❌ **[Error Log]** 에러 발생: {str(e)}")
-            await message.channel.send("🛑 **[Log]** 에러가 발생하여 봇 및 컨테이너를 종료합니다.")
-            await client.close() 
+            error_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            full_error = traceback.format_exc()
             
-        return
+            # 컨테이너 내부에 logs 폴더가 없으면 생성
+            os.makedirs("logs", exist_ok=True) 
+            
+            with open("logs/bot_error.log", "a", encoding="utf-8") as f:
+                f.write(f"\n[{error_time}] 에러 발생:\n{full_error}\n{'-'*50}")
+            
+            try:
+                await message.channel.send("❌ **[Error Log]** 치명적인 에러가 발생하여 `bot_error.log` 파일에 상세 내역을 기록했습니다.")
+                await message.channel.send("🛑 **[Log]** 에러가 발생하여 봇 및 컨테이너를 종료합니다.")
+            except Exception as send_e:
+                print(f"디스코드 알림 전송 실패: {send_e}")
+            
+            await client.close() 
+            return
 
     # 2. 특정 키워드로 컨테이너 수동 종료
     if message.content.startswith("!종료"):
