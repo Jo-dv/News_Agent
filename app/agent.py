@@ -14,6 +14,8 @@ from langgraph.prebuilt import ToolNode
 import chromadb
 import chromadb.utils.embedding_functions as embedding_functions
 
+from prompts import get_agent_system_prompt, get_report_generation_prompt, get_chat_prompt
+
 # --- [1. 상태(State) 정의] ---
 class AgentState(TypedDict):
     messages: Annotated[List[AnyMessage], operator.add]
@@ -61,23 +63,11 @@ def agent_node(state: AgentState):
     today = now.strftime("%Y-%m-%d")
     last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    system_prompt = f"""당신은 자율적으로 판단하는 금융 데이터 에이전트입니다.
-    분석 범위: {last_week} ~ {today}
-    
-    [미션] 
-    1. 거시 경제와 4대 금융 산업(은행, 카드, 보험, 증권)의 핵심 뉴스를 파악하십시오.
-    
-    [ReAct 탈출 및 사고 규칙 - 절대 준수]
-    1. 정보가 부족하면 검색 도구를 사용하십시오. (다중 검색 권장)
-    2. **도구를 호출하기 전에는 반드시 "어떤 데이터가 부족해서 무슨 키워드로 추가 검색을 하는지" 판단 이유를 텍스트로 먼저 명시하십시오. 이유 설명 없이 도구만 호출하는 것을 금지합니다.**
-    3. 충분한 정보가 모였다고 판단되면 즉시 도구 사용을 중단하십시오.
-    4. 도구 사용을 멈출 때는 "원하시면 다음 단계로..." 같은 불필요한 대화나 사용자에게 묻는 질문을 절대 하지 마십시오.
-    5. 분석이 끝나면 오직 "정보 수집 완료"라는 단 6글자만 출력하고 행동을 종료하십시오.
-    """
+    # 프롬프트 파일에서 가져오기
+    system_prompt = get_agent_system_prompt(last_week, today)
     
     messages = [SystemMessage(content=system_prompt)] + state["messages"]
     response = llm_with_tools.invoke(messages)
-    
     return {"messages": [response]}
 
 def generate_report_node(state: AgentState):
@@ -85,36 +75,15 @@ def generate_report_node(state: AgentState):
     today = now.strftime("%Y-%m-%d")
     last_week = (now - timedelta(days=7)).strftime("%Y-%m-%d")
     
-    prompt = f"""
-    아래는 당신이 도구를 사용해 수집하고 분석한 전체 기록입니다.
-    이 기록들을 바탕으로 {last_week} ~ {today} 기준 [주간 금융 인사이트 리포트]를 작성하십시오.
+    # 프롬프트 파일에서 가져오기
+    prompt = get_report_generation_prompt(last_week, today)
     
-    ---
-    ### 템플릿 가이드 ###
-    ■ 1. 에이전트 추론 요약
-    ■ 2. 주간 핵심 요약
-    ■ 3. 주요 뉴스 상세 (거시, 은행, 카드, 보험, 증권 팩트 위주)
-    ■ 4. 주요 출처 (참고한 URL들)
-    ---
-
-    [절대 규칙]
-    1. 지정된 1~4번 템플릿 항목 내용 외에는 단 한 글자도 출력하지 마십시오.
-    2. "원하시면 다음 단계로", "도움이 필요하시면" 등 사용자의 의향을 묻는 인사말이나 안내문구를 절대 추가하지 마십시오.
-    3. 4번 주요 출처 작성이 끝나면 문장을 닫고 즉시 텍스트 생성을 종료하십시오.
-    4. 제공된 검색 데이터 중에서 날짜가 {last_week} 이전인 과거 데이터(예: 1~2달 전 기사)는 무조건 폐기하십시오. 만약 특정 산업에 최신 데이터가 아예 없다면 억지로 과거 기사를 쓰지 말고 "이번 주 주요 이슈 없음"이라고만 기재하십시오.
-    """
-    
-    # 1. 기존 메시지 기록 가져오기
     messages_to_pass = state["messages"]
-    
-    # 2. [에러 방지 핵심] 마지막 메시지가 도구 호출을 포함하고 있다면, 그 메시지는 버림
     if hasattr(messages_to_pass[-1], 'tool_calls') and messages_to_pass[-1].tool_calls:
         messages_to_pass = messages_to_pass[:-1]
     
-    # 3. 정제된 메시지에 리포트 작성 프롬프트를 붙여서 실행
     report_request = messages_to_pass + [HumanMessage(content=prompt)]
     response = report_llm.invoke(report_request)
-    
     return {"final_report": response.content}
 
 def rag_store_node(state: AgentState):
@@ -148,7 +117,6 @@ def rag_store_node(state: AgentState):
     return state
 
 def chat_and_rag_node(state: AgentState):
-    """사용자 질의응답 (엄격한 프롬프트 적용)"""
     query = state.get("user_query")
     results = collection.query(query_texts=[query], n_results=3)
     
@@ -156,24 +124,11 @@ def chat_and_rag_node(state: AgentState):
     if results and results.get('documents') and results['documents'][0]:
         context = "\n\n".join(results['documents'][0])
         
-    prompt = f"""
-    당신은 제공된 [참고 자료]만 읽고 답변하는 엄격한 금융 데이터 분석가입니다.
-
-    [참고 자료]
-    {context}
-
-    [사용자 질문]
-    {query}
-
-    [응답 지침 - 최우선 순위]
-    1. [참고 자료]에 사용자의 질문과 관련된 단어나 맥락이 조금이라도 포함되어 있다면, 그것을 바탕으로 최대한 답변을 구성하십시오.(관련 내용이 아예 단 하나도 없을 때만 "제공된 리포트 DB에 관련된 내용이 없습니다."라고 출력하십시오.)
-    2. 자료에 내용이 있다면, 질문에 대해서만 논리적이고 건조하게 답변하십시오.
-    3. 당신의 개인적인 상식이나 추임새는 철저히 배제하십시오.
-    """
+    # 프롬프트 파일에서 가져오기
+    prompt = get_chat_prompt(context, query)
     
     response = report_llm.invoke([HumanMessage(content=prompt)])
     
-    # 혹시라도 LLM이 말을 안 들을 때를 대비한 강제 차단 방어벽
     if "내용이 없습니다" in response.content or "없습니다" in response.content:
         return {"chat_response": "제공된 리포트 DB에 관련된 내용이 없습니다."}
         
