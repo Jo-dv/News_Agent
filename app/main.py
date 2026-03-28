@@ -95,17 +95,19 @@ async def on_message(message):
                 print(f"디스코드 알림 전송 실패: {send_e}")
             
             await client.close() 
-            return
+        
+        return
 
     # 2. 특정 키워드로 컨테이너 수동 종료
-    if message.content.startswith("!종료"):
+    elif message.content.startswith("!종료"):
         await message.channel.send("🛑 **[Log]** 시스템 종료 명령을 접수했습니다. 봇과 도커 컨테이너를 안전하게 종료합니다. 수고하셨습니다!")
         print("사용자 요청(!종료)에 의해 컨테이너를 종료합니다.")
         await client.close() # 디스코드 연결 종료 -> 파이썬 스크립트 종료 -> 도커 컨테이너 종료
+        
         return
 
     # 3. 일반 채팅 (RAG 챗봇 기능 유지)
-    if message.content:
+    elif message.content and not message.content.startswith("!"):
         async with message.channel.typing():
             try:
                 state = {
