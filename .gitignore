@@ -1,5 +1,6 @@
 .env
 /app/__pycache__
-/models
-/chroma_data_v2
+/app/logs
 /app/chroma_data
+/chroma_data_v2
+/logs
