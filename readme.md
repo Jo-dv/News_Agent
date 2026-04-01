@@ -1,74 +1,77 @@
-# 🚀 AI 금융 뉴스 자동화 에이전트
+# 🚀 V3: ReAct 금융 뉴스 에이전트
 
-매일 아침 '매일경제 금융정책' 뉴스를 자동으로 수집하고, AI가 핵심만 요약하여 노션(Notion)에 아카이빙한 뒤 이메일로 브리핑 리포트를 발송해 주는 자율형 데이터 파이프라인입니다.
+정해진 순서대로 작동하던 선형(Linear) 파이프라인을 발전시켜, AI 스스로 정보의 충족 여부를 판단하고 목표를 달성할 때까지 능동적으로 재검색을 수행하는 ReAct 기반 에이전트입니다.
 
 ## ✨ 주요 기능 (Features)
 
-1. **지능형 웹 크롤링 & 데이터 정제**
-   - 매일경제 [금융정책 섹션](https://www.mk.co.kr/news/financial/financial-policy) 최신 기사 자동 수집
-   - 스크롤/인터랙티브 특수 기사(`mvr-`, `interact` 등) 원천 차단
-   - 300자 미만 깡통 기사 필터링 및 기자 이름 꼬리표 제거
-   - 가독성 극대화를 위한 문단 정규화 및 중간제목(`midtitle`) 보호
-2. **AI 기반 중복 기사 제거**
-   - TF-IDF 및 코사인 유사도(Cosine Similarity)를 활용하여 내용이 겹치는 기사 자동 병합/제거
-3. **노션(Notion) 자동 아카이빙**
-   - 정제된 원본 기사를 지정된 노션 데이터베이스에 영구 보존
-4. **LLM 기반 핵심 브리핑 생성**
-   - 수집된 주요 기사들을 AI가 분석하여 일일 금융 브리핑 리포트 작성
-5. **이메일(SMTP) 자동 발송**
-   - 완성된 브리핑 리포트를 이메일로 자동 전송
+1. **자율 탐색 루프 (ReAct Architecture)**
+   - 에이전트가 검색 결과(Observation)를 대조하여, 목표한 금융 뉴스 데이터가 모두 수집되었는지 스스로 판단(Reasoning).
+   - 누락된 정보가 있다면 해당 키워드로 검색 도구를 재호출(Action)하는 순환(Loop) 구조 구현.
+
+2. **LangGraph 기반 순환 워크플로우 제어**
+   - 조건부 엣지(Conditional Edges)를 활용하여 데이터 부족 시 검색 노드로 회귀하고, 목표 달성 시에만 리포트 생성 노드로 분기(Routing)하는 상태(State) 관리.
+
+3. **프롬프트 모듈화 및 구조화된 리포트 생성**
+   - 시스템 프롬프트와 템플릿을 별도 파일로 분리하여 코드 가독성 및 프롬프트 엔지니어링 효율 극대화.
+   - 에이전트의 반복 추론 과정, 주간 핵심 요약, 주요 뉴스 상세 팩트, 출처 URL이 분리된 포맷으로 리포트 자동 작성 및 이메일 전송.
+
+4. **디스코드 기반 RAG 챗봇**
+   - 매일 생성된 리포트를 ChromaDB(벡터 데이터베이스)에 임베딩하여 저장.
+   - 디스코드 채팅을 통해 명령어를 제어하고, DB에 저장된 과거 리포트를 기반으로 팩트 중심의 질의응답(RAG) 수행.
 
 ## 🛠 기술 스택 (Tech Stack)
-- **OS:** Window 10
 - **Language:** Python 3.11
-- **Environment:** Docker, Docker Compose
-- **Libraries:** `requests`, `beautifulsoup4`, `scikit-learn`, `langchain-core`, `langchain_ollama`, `python-dotenv`
-- **External API:** Notion API, Google Gmail SMTP
+- **Framework:** LangChain, LangGraph
+- **LLM & Embedding:** OpenAI GPT (`gpt-5.4-mini`, `text-embedding-3-small`)
+- **Vector Database:** ChromaDB
+- **Search API:** Tavily Search API
+- **Interface:** Discord.py
 
-## 💾 환경 변수
-[노션 DB 토큰 설정하기](https://www.notion.so/profile/integrations/internal)  
-[앱 비밀번호 설정하기](https://support.google.com/accounts/answer/185833?hl=ko)
+## 🤖 디스코드 봇 세팅 가이드
+[Discord Developer Portal](https://discord.com/developers/applications) 접속 후 다음 3단계를 진행하십시오.
+
+**1. 봇 생성 및 토큰 발급**
+* **[New Application]** 생성 ➔ 좌측 **[Bot]** 메뉴 이동
+* **[Reset Token]** 클릭 ➔ 발급된 토큰 복사 ➔ `.env` 파일의 `DISCORD_BOT_TOKEN`에 붙여넣기
+
+**2. 필수 메시지 읽기 권한(Intent) 허용**
+* 동일한 **[Bot]** 메뉴 하단 스크롤 ➔ **[Privileged Gateway Intents]** 섹션 확인
+* **[Message Content Intent]** 활성화(토글 ON) ➔ **[Save Changes]** 저장
+
+**3. 봇 초대 링크 생성 및 서버 추가**
+* 좌측 **[OAuth2]** 메뉴 이동
+* 하단 **[Scopes]** 에서 `bot`, `applications.commands` 체크 ➔ **[Bot Permissions]** 에서 필요한 권한(`Send Messages`, `Read Messages/View Channels` 등) 체크
+* 하단에 생성된 URL 복사 ➔ 웹 브라우저 주소창에 입력하여 내 서버로 초대
+
+## 💾 환경 변수 설정 (.env)
+루트 디렉토리에 `.env` 파일을 생성하고 아래 API 키를 입력하십시오.
+```env
+OPENAI_API_KEY=sk-...
+TAVILY_API_KEY=tvly-...
+DISCORD_BOT_TOKEN=...
+SENDER_EMAIL=발신용_구글이메일@gmail.com
+SENDER_PASSWORD=구글앱비밀번호
+RECEIVER_EMAIL=수신용_이메일@gmail.com
 ```
-# Notion API 설정
-NOTION_TOKEN=secret_노션토큰
-NOTION_DATABASE_ID=32자리데이터베이스ID
 
-# Gmail 이메일 발송 설정
-SENDER_EMAIL=구글이메일@gmail.com
-SENDER_PASSWORD=구글앱비밀번호입력
-RECEIVER_EMAIL= # 필요시
-```
+## 💬 디스코드 명령어 (Discord Commands)
+!리포트생성: 에이전트가 ReAct 루프를 가동하여 정보 수집, 리포트 생성, DB 적재 및 이메일 발송을 순차적으로 실행합니다.
 
-## ⚙️ 설치 및 세팅 방법 (Installation & Setup)
-[도커 설치](https://www.docker.com/)
-```bash
-git clone https://github.com/Jo-dv/News_Agent.git
-```
+!종료: 시스템 종료 명령을 접수하고 봇과 도커 컨테이너를 안전하게 종료합니다.
 
-```
-docker-compose up --build -d  # 컨테이너 일괄 실행
-docker exec -it agent_ollama ollama pull coolsoon/kanana-1.5-8b  # 모델 설치
-docker exec -it agent_app python main.py  # 에이전트 실행
-```
+[일반 채팅 입력]: 리포트 생성이 완료된 후 질문을 입력하면, 저장된 벡터 DB 문서를 기반으로 답변을 생성합니다(RAG).
 
-## 🤖 로컬 LLM
-### kanana-1.5-8b-instruct-2505 
-https://huggingface.co/kakaocorp/kanana-1.5-8b-instruct-2505  
-https://ollama.com/coolsoon/kanana-1.5-8b
-
-
-## 📁 파일구조
+## 📁 파일 구조 (File Structure)
 ```
 .
 ├── app/
-│   ├── main.py             # 메인 파이프라인 실행 스크립트
-│   ├── news_scraper.py     # 웹 크롤링 및 데이터 전처리 모듈
-│   ├── ai_reporter.py      # LLM 연동 및 리포트 생성 모듈
-│   ├── notion_db.py        # 노션 API 연동 및 아카이빙 모듈
-│   └── email_sender.py     # 이메일 전송 모듈
-├── .env                    # 환경변수
-├── .gitignore              
-├── docker-compose.yml      # 도커 컴포즈 설정
-├── Dockerfile              # 도커 이미지 빌드 파일
-└── requirements.txt        # 파이썬 의존성 패키지 목록
+│   ├── main.py         # 디스코드 봇 인터페이스, 슬래시 명령어 및 파이프라인 실행
+│   ├── agent.py        # LangGraph ReAct 워크플로우(루프 및 분기), 노드, DB 세팅
+│   ├── prompts.py      # LLM 프롬프트 템플릿 분리 관리 모듈
+│   └── email_sender.py # 이메일(SMTP) 발송 모듈
+├── chroma_data/        # ChromaDB 벡터 데이터 저장 폴더
+├── .env                # API 키 설정 파일 (git 제외)
+├── docker-compose.yml  # 도커 컴포즈 설정
+├── Dockerfile          # 도커 이미지 빌드 파일
+└── requirements.txt    # 파이썬 패키지 목록
 ```
